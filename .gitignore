@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+/var/log/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Flutter
+flutter_dashboard/.dart_tool/
+flutter_dashboard/.packages
+flutter_dashboard/.pub-cache/
+flutter_dashboard/.pub/
+flutter_dashboard/build/
+flutter_dashboard/.flutter-plugins
+flutter_dashboard/.flutter-plugins-dependencies
+flutter_dashboard/*.iml
+flutter_dashboard/.metadata
+flutter_dashboard/pubspec.lock
+
+# macOS
+.DS_Store
+*.dmg
+
+# Linux
+*.deb
