@@ -42,8 +42,8 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  final _brokerController = TextEditingController(text: 'localhost');
-  final _portController = TextEditingController(text: '1883');
+  final _brokerController = TextEditingController(text: '192.168.0.104');
+  final _portController = TextEditingController(text: '9001');
 
   @override
   void dispose() {
@@ -141,7 +141,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               } else {
                 mqtt.connect(
                   broker: _brokerController.text,
-                  port: int.tryParse(_portController.text) ?? 1883,
+                  port: int.tryParse(_portController.text) ?? 9001,
+                  useWebSocket: true, // 🔑 THIS IS THE FIX
                 );
               }
             },
