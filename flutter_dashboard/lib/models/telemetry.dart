@@ -1,92 +1,78 @@
-/// Telemetry data model for MAVLink stream
 class Telemetry {
-  final double altitude;
-  final double airspeed;
   final double batteryVoltage;
+  final double altitude;
+  final double latitude;
+  final double longitude;
+  final double heading;
+  final double groundspeed;
   final DateTime timestamp;
 
   Telemetry({
-    required this.altitude,
-    required this.airspeed,
     required this.batteryVoltage,
+    required this.altitude,
+    required this.latitude,
+    required this.longitude,
+    required this.heading,
+    required this.groundspeed,
     required this.timestamp,
   });
 
   factory Telemetry.fromJson(Map<String, dynamic> json) {
     return Telemetry(
-      altitude: (json['altitude'] as num?)?.toDouble() ?? 0.0,
-      airspeed: (json['airspeed'] as num?)?.toDouble() ?? 0.0,
-      batteryVoltage: (json['battery_voltage'] as num?)?.toDouble() ?? 0.0,
-      timestamp: json['timestamp'] != null
-          ? DateTime.parse(json['timestamp'])
+      batteryVoltage: (json['battery_voltage'] ?? json['batteryVoltage'] ?? 0.0).toDouble(),
+      altitude: (json['altitude'] ?? json['alt'] ?? 0.0).toDouble(),
+      latitude: (json['latitude'] ?? json['lat'] ?? 0.0).toDouble(),
+      longitude: (json['longitude'] ?? json['lon'] ?? json['lng'] ?? 0.0).toDouble(),
+      heading: (json['heading'] ?? json['yaw'] ?? 0.0).toDouble(),
+      groundspeed: (json['groundspeed'] ?? json['ground_speed'] ?? json['speed'] ?? 0.0).toDouble(),
+      timestamp: json['timestamp'] != null 
+          ? DateTime.parse(json['timestamp']) 
           : DateTime.now(),
     );
   }
 
-  /// Check if battery is in critical state (below 21.0V for 6S)
-  bool get isBatteryCritical => batteryVoltage < 21.0;
-
-  /// Check if battery is in warning state (below 22.0V)
-  bool get isBatteryWarning => batteryVoltage < 22.0 && !isBatteryCritical;
-
-  /// Get battery percentage (approximate for 6S LiPo)
-  /// 6S: 18V (empty) to 25.2V (full)
-  double get batteryPercentage {
-    const minVoltage = 18.0;
-    const maxVoltage = 25.2;
-    final percentage =
-        ((batteryVoltage - minVoltage) / (maxVoltage - minVoltage)) * 100;
-    return percentage.clamp(0.0, 100.0);
-  }
-
-  Telemetry copyWith({
-    double? altitude,
-    double? airspeed,
-    double? batteryVoltage,
-    DateTime? timestamp,
-  }) {
-    return Telemetry(
-      altitude: altitude ?? this.altitude,
-      airspeed: airspeed ?? this.airspeed,
-      batteryVoltage: batteryVoltage ?? this.batteryVoltage,
-      timestamp: timestamp ?? this.timestamp,
-    );
+  Map<String, dynamic> toJson() {
+    return {
+      'battery_voltage': batteryVoltage,
+      'altitude': altitude,
+      'latitude': latitude,
+      'longitude': longitude,
+      'heading': heading,
+      'groundspeed': groundspeed,
+      'timestamp': timestamp.toIso8601String(),
+    };
   }
 }
 
-/// Alert message model for critical events
+enum AlertType {
+  info,
+  warning,
+  error,
+}
+
+enum AlertPriority {
+  low,
+  medium,
+  high,
+  critical,
+}
+
 class AlertMessage {
-  final String type;
-  final String priority;
   final String message;
-  final double threshold;
-  final double currentVoltage;
+  final AlertType type;
+  final AlertPriority priority;
   final DateTime timestamp;
+  final double currentVoltage;
+  final double threshold;
   final String actionRequired;
 
   AlertMessage({
+    required this.message,
     required this.type,
     required this.priority,
-    required this.message,
-    required this.threshold,
-    required this.currentVoltage,
     required this.timestamp,
+    required this.currentVoltage,
+    required this.threshold,
     required this.actionRequired,
   });
-
-  factory AlertMessage.fromJson(Map<String, dynamic> json) {
-    return AlertMessage(
-      type: json['type'] ?? 'UNKNOWN',
-      priority: json['priority'] ?? 'LOW',
-      message: json['message'] ?? '',
-      threshold: (json['threshold'] as num?)?.toDouble() ?? 21.0,
-      currentVoltage: (json['current_voltage'] as num?)?.toDouble() ?? 0.0,
-      timestamp: json['timestamp'] != null
-          ? DateTime.parse(json['timestamp'])
-          : DateTime.now(),
-      actionRequired: json['action_required'] ?? '',
-    );
-  }
-
-  bool get isHighPriority => priority == 'HIGH';
 }

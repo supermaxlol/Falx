@@ -2,48 +2,54 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'services/mqtt_service.dart';
 import 'models/telemetry.dart';
-import 'widgets/telemetry_card.dart';
-import 'widgets/alert_banner.dart';
 
 void main() {
-  runApp(const MAVLinkDashboardApp());
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => MqttService()),
+      ],
+      child: const MyApp(),
+    ),
+  );
 }
 
-class MAVLinkDashboardApp extends StatelessWidget {
-  const MAVLinkDashboardApp({super.key});
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => MqttService(),
-      child: MaterialApp(
-        title: 'MAVLink Dashboard',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData.dark().copyWith(
-          scaffoldBackgroundColor: const Color(0xFF1A1A2E),
-          primaryColor: Colors.blue,
-          colorScheme: ColorScheme.dark(
-            primary: Colors.blue,
-            secondary: Colors.cyan,
-            surface: const Color(0xFF16213E),
+    return MaterialApp(
+      title: 'MAVLink MQTT Dashboard',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF0A0E27),
+        cardTheme: CardThemeData(
+          color: const Color(0xFF1A1F3A),
+          elevation: 4,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
           ),
         ),
-        home: const DashboardScreen(),
       ),
+      home: const HomeScreen(),
     );
   }
 }
 
-class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
-  final _brokerController = TextEditingController(text: '192.168.0.104');
-  final _portController = TextEditingController(text: '9001');
+class _HomeScreenState extends State<HomeScreen> {
+  final TextEditingController _brokerController = TextEditingController(text: 'localhost');
+  final TextEditingController _portController = TextEditingController(text: '9001');
+  bool _showSettings = false;
 
   @override
   void dispose() {
@@ -54,241 +60,382 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final mqtt = context.watch<MqttService>();
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'MAVLink Telemetry Dashboard',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        backgroundColor: const Color(0xFF16213E),
+        title: const Text('MAVLink Dashboard', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF1A1F3A),
         elevation: 0,
         actions: [
-          Consumer<MqttService>(
-            builder: (context, mqtt, _) => ConnectionStatus(
-              isConnected: mqtt.isConnected,
-              status: mqtt.connectionStatus,
-            ),
+          IconButton(
+            icon: Icon(_showSettings ? Icons.dashboard : Icons.settings),
+            onPressed: () => setState(() => _showSettings = !_showSettings),
           ),
-          const SizedBox(width: 16),
         ],
       ),
-      body: Consumer<MqttService>(
-        builder: (context, mqtt, _) {
-          return Column(
-            children: [
-              // Connection panel
-              _buildConnectionPanel(mqtt),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Connection Status Banner
+            _buildConnectionBanner(mqtt),
+            const SizedBox(height: 16),
 
-              // Alert banner if present
-              if (mqtt.latestAlert != null)
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: AlertBanner(
-                    alert: mqtt.latestAlert!,
-                    onDismiss: mqtt.clearAlert,
-                  ),
-                ),
-
-              // Telemetry display
-              Expanded(
-                child: mqtt.isConnected
-                    ? _buildTelemetryDisplay(mqtt)
-                    : _buildDisconnectedView(),
-              ),
+            // Settings Panel
+            if (_showSettings) ...[
+              _buildSettingsPanel(mqtt),
+              const SizedBox(height: 16),
             ],
-          );
-        },
+
+            // Alert Section
+            if (mqtt.latestAlert != null) ...[
+              _buildAlertCard(mqtt),
+              const SizedBox(height: 16),
+            ],
+
+            // Telemetry Grid
+            if (mqtt.latestTelemetry != null) _buildTelemetryGrid(mqtt),
+
+            // No Data State
+            if (mqtt.isConnected && mqtt.latestTelemetry == null)
+              _buildNoDataCard(),
+
+            // Disconnected State
+            if (!mqtt.isConnected && !_showSettings)
+              _buildDisconnectedState(),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildConnectionPanel(MqttService mqtt) {
+  Widget _buildConnectionBanner(MqttService mqtt) {
+    final color = mqtt.isConnected ? Colors.green : Colors.orange;
+    final icon = mqtt.isConnected ? Icons.check_circle : Icons.warning_amber;
+
     return Container(
-      padding: const EdgeInsets.all(16),
-      color: const Color(0xFF16213E),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        border: Border.all(color: color, width: 1),
+        borderRadius: BorderRadius.circular(8),
+      ),
       child: Row(
         children: [
-          Expanded(
-            flex: 2,
-            child: TextField(
-              controller: _brokerController,
-              decoration: const InputDecoration(
-                labelText: 'MQTT Broker',
-                border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              ),
-              enabled: !mqtt.isConnected,
-            ),
-          ),
+          Icon(icon, color: color, size: 20),
           const SizedBox(width: 12),
           Expanded(
-            child: TextField(
-              controller: _portController,
-              decoration: const InputDecoration(
-                labelText: 'Port',
-                border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Text(
+              mqtt.connectionStatus,
+              style: TextStyle(color: color, fontWeight: FontWeight.w500),
+            ),
+          ),
+          if (mqtt.isConnected)
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
               ),
-              keyboardType: TextInputType.number,
-              enabled: !mqtt.isConnected,
             ),
-          ),
-          const SizedBox(width: 12),
-          ElevatedButton.icon(
-            onPressed: () {
-              if (mqtt.isConnected) {
-                mqtt.disconnect();
-              } else {
-                mqtt.connect(
-                  broker: _brokerController.text,
-                  port: int.tryParse(_portController.text) ?? 9001,
-                  useWebSocket: true, // 🔑 THIS IS THE FIX
-                );
-              }
-            },
-            icon: Icon(mqtt.isConnected ? Icons.link_off : Icons.link),
-            label: Text(mqtt.isConnected ? 'Disconnect' : 'Connect'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: mqtt.isConnected ? Colors.red : Colors.green,
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-            ),
-          ),
         ],
       ),
     );
   }
 
-  Widget _buildTelemetryDisplay(MqttService mqtt) {
-    final telemetry = mqtt.latestTelemetry;
+  Widget _buildSettingsPanel(MqttService mqtt) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Connection Settings',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _brokerController,
+              decoration: const InputDecoration(
+                labelText: 'Broker Address',
+                hintText: 'localhost or 192.168.x.x',
+                prefixIcon: Icon(Icons.dns),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _portController,
+              decoration: const InputDecoration(
+                labelText: 'WebSocket Port',
+                hintText: '9001',
+                prefixIcon: Icon(Icons.network_check),
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  if (!mqtt.isConnected) {
+                    mqtt.connect(
+                      broker: _brokerController.text,
+                      websocketPort: int.tryParse(_portController.text) ?? 9001,
+                    );
+                  } else {
+                    mqtt.disconnect();
+                  }
+                },
+                icon: Icon(mqtt.isConnected ? Icons.close : Icons.link),
+                label: Text(
+                  mqtt.isConnected ? 'Disconnect' : 'Connect',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: mqtt.isConnected ? Colors.red : Colors.green,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-    if (telemetry == null) {
-      return const Center(
+  Widget _buildAlertCard(MqttService mqtt) {
+    final alert = mqtt.latestAlert!;
+    final color = alert.priority == AlertPriority.critical
+        ? Colors.red
+        : alert.priority == AlertPriority.high
+            ? Colors.orange
+            : Colors.yellow;
+
+    return Card(
+      color: color.withOpacity(0.15),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.warning_amber, color: color, size: 28),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    alert.message,
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: color,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: mqtt.clearAlert,
+                  color: color,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _buildAlertDetail('Type', alert.type.name.toUpperCase()),
+            _buildAlertDetail('Priority', alert.priority.name.toUpperCase()),
+            _buildAlertDetail(
+              'Voltage',
+              '${alert.currentVoltage.toStringAsFixed(2)}V (Threshold: ${alert.threshold}V)',
+            ),
+            _buildAlertDetail('Action', alert.actionRequired),
+            _buildAlertDetail(
+              'Time',
+              '${alert.timestamp.hour}:${alert.timestamp.minute.toString().padLeft(2, '0')}:${alert.timestamp.second.toString().padLeft(2, '0')}',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAlertDetail(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Text(
+            '$label: ',
+            style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.white70),
+          ),
+          Text(value, style: const TextStyle(color: Colors.white)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTelemetryGrid(MqttService mqtt) {
+    final telemetry = mqtt.latestTelemetry!;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Telemetry Data',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 12),
+        GridView.count(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisCount: 2,
+          mainAxisSpacing: 12,
+          crossAxisSpacing: 12,
+          childAspectRatio: 1.5,
+          children: [
+            _buildTelemetryCard(
+              'Battery',
+              '${telemetry.batteryVoltage.toStringAsFixed(2)} V',
+              Icons.battery_charging_full,
+              Colors.green,
+            ),
+            _buildTelemetryCard(
+              'Altitude',
+              '${telemetry.altitude.toStringAsFixed(1)} m',
+              Icons.height,
+              Colors.blue,
+            ),
+            _buildTelemetryCard(
+              'Latitude',
+              telemetry.latitude.toStringAsFixed(6),
+              Icons.location_on,
+              Colors.orange,
+            ),
+            _buildTelemetryCard(
+              'Longitude',
+              telemetry.longitude.toStringAsFixed(6),
+              Icons.location_on,
+              Colors.orange,
+            ),
+            _buildTelemetryCard(
+              'Heading',
+              '${telemetry.heading.toStringAsFixed(0)}°',
+              Icons.navigation,
+              Colors.purple,
+            ),
+            _buildTelemetryCard(
+              'Ground Speed',
+              '${telemetry.groundspeed.toStringAsFixed(1)} m/s',
+              Icons.speed,
+              Colors.teal,
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _buildLastUpdateCard(telemetry),
+      ],
+    );
+  }
+
+  Widget _buildTelemetryCard(String label, String value, IconData icon, Color color) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
+            Icon(icon, color: color, size: 32),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLastUpdateCard(Telemetry telemetry) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Last Update',
+              style: TextStyle(color: Colors.white70),
+            ),
+            Text(
+              '${telemetry.timestamp.hour}:${telemetry.timestamp.minute.toString().padLeft(2, '0')}:${telemetry.timestamp.second.toString().padLeft(2, '0')}',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNoDataCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          children: [
+            Icon(Icons.pending, size: 64, color: Colors.white24),
+            const SizedBox(height: 16),
             Text(
               'Waiting for telemetry data...',
+              style: TextStyle(color: Colors.white70, fontSize: 16),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDisconnectedState() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          children: [
+            Icon(Icons.cloud_off, size: 64, color: Colors.white24),
+            const SizedBox(height: 16),
+            Text(
+              'Not Connected',
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Tap settings to configure connection',
               style: TextStyle(color: Colors.white54),
             ),
           ],
         ),
-      );
-    }
-
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          // Main telemetry cards
-          Expanded(
-            flex: 2,
-            child: Row(
-              children: [
-                Expanded(
-                  child: TelemetryCard(
-                    title: 'Altitude',
-                    value: telemetry.altitude.toStringAsFixed(1),
-                    unit: 'm',
-                    icon: Icons.height,
-                    backgroundColor: Colors.indigo.shade700,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: TelemetryCard(
-                    title: 'Airspeed',
-                    value: telemetry.airspeed.toStringAsFixed(1),
-                    unit: 'm/s',
-                    icon: Icons.speed,
-                    backgroundColor: Colors.teal.shade700,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: TelemetryCard(
-                    title: 'Battery Voltage',
-                    value: telemetry.batteryVoltage.toStringAsFixed(2),
-                    unit: 'V',
-                    icon: Icons.battery_charging_full,
-                    isWarning: telemetry.isBatteryWarning,
-                    isCritical: telemetry.isBatteryCritical,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Battery gauge
-          Expanded(
-            child: BatteryGauge(
-              voltage: telemetry.batteryVoltage,
-              percentage: telemetry.batteryPercentage,
-              isWarning: telemetry.isBatteryWarning,
-              isCritical: telemetry.isBatteryCritical,
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Timestamp
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.blueGrey.shade900,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.access_time, color: Colors.white54, size: 16),
-                const SizedBox(width: 8),
-                Text(
-                  'Last update: ${_formatTimestamp(telemetry.timestamp)}',
-                  style: const TextStyle(color: Colors.white54),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     );
-  }
-
-  Widget _buildDisconnectedView() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.cloud_off,
-            size: 80,
-            color: Colors.grey.shade700,
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            'Not Connected',
-            style: TextStyle(
-              color: Colors.white54,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Enter MQTT broker details and click Connect',
-            style: TextStyle(color: Colors.white38),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _formatTimestamp(DateTime timestamp) {
-    return '${timestamp.hour.toString().padLeft(2, '0')}:'
-        '${timestamp.minute.toString().padLeft(2, '0')}:'
-        '${timestamp.second.toString().padLeft(2, '0')}.'
-        '${timestamp.millisecond.toString().padLeft(3, '0')}';
   }
 }

@@ -66,7 +66,7 @@ class _AlertBannerState extends State<AlertBanner>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          widget.alert.type,
+                          widget.alert.type.name, // converts enum to string automatically
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,

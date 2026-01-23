@@ -1,264 +1,299 @@
-import 'dart:async';
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_browser_client.dart';
-import 'package:mqtt_client/mqtt_server_client.dart';
 import '../models/telemetry.dart';
 
-/// MQTT Service: Unified, platform-aware (Web + Native)
 class MqttService extends ChangeNotifier {
-  /// MQTT client (MqttServerClient for native, MqttBrowserClient for web)
-  dynamic _client;
+  MqttBrowserClient? _client;
+  bool isConnected = false;
+  String connectionStatus = 'Disconnected';
+  Telemetry? latestTelemetry;
+  AlertMessage? latestAlert;
+  
+  // Connection stats
+  int messageCount = 0;
+  DateTime? lastMessageTime;
+  StreamSubscription? _messageSubscription;
 
-  /// Connection state
-  bool _isConnected = false;
-  bool _isConnecting = false;
-  String _connectionStatus = 'Disconnected';
-
-  /// Retry management
-  int _retryCount = 0;
-  final int _maxRetries = 5;
-  final Duration _retryDelay = const Duration(seconds: 3);
-
-  /// Telemetry and alerts
-  Telemetry? _latestTelemetry;
-  AlertMessage? _latestAlert;
-  final List<Telemetry> _telemetryHistory = [];
-
-  /// Stream controllers
-  final _telemetryController = StreamController<Telemetry>.broadcast();
-  final _alertController = StreamController<AlertMessage>.broadcast();
-
-  /// Getters
-  bool get isConnected => _isConnected;
-  bool get isConnecting => _isConnecting;
-  String get connectionStatus => _connectionStatus;
-  Telemetry? get latestTelemetry => _latestTelemetry;
-  AlertMessage? get latestAlert => _latestAlert;
-  List<Telemetry> get telemetryHistory => List.unmodifiable(_telemetryHistory);
-
-  Stream<Telemetry> get telemetryStream => _telemetryController.stream;
-  Stream<AlertMessage> get alertStream => _alertController.stream;
-
-  /// Connect to MQTT broker
-  Future<bool> connect({
-    String broker = 'localhost',
-    int? port,
-    bool useWebSocket = false,
+  /// Connect to MQTT broker via WebSocket
+  Future<void> connect({
+    required String broker,
+    required int websocketPort,
+    String clientIdentifier = '',
   }) async {
-    if (_isConnecting || _isConnected) return false;
+    if (isConnected) {
+      print('[MQTT] Already connected, disconnecting first...');
+      disconnect();
+    }
 
-    _isConnecting = true;
-    _connectionStatus = 'Connecting...';
-    notifyListeners();
-
-    port ??= useWebSocket ? 9001 : 1883;
-
-    // Create platform-aware client
-    _client = _createClient(broker, port, useWebSocket);
-
-    // Configure client
-    _client.logging(on: true);
-    _client.keepAlivePeriod = 30;
-
-    _client.onConnected = () {
-      debugPrint('[MQTT] _onConnected fired!');
-      _onConnected();
-    };
-
-    _client.onDisconnected = () {
-      debugPrint('[MQTT] _onDisconnected fired!');
-      _onDisconnected(broker, port, useWebSocket);
-    };
-
-    _client.onSubscribed = _onSubscribed;
-
-    _client.connectionMessage = MqttConnectMessage()
-        .withClientIdentifier(
-            'flutter_dashboard_${DateTime.now().millisecondsSinceEpoch}')
-        .startClean()
-        .withWillQos(MqttQos.atLeastOnce);
-
-    // Attempt connection with timeout
+    final clientId = clientIdentifier.isEmpty 
+        ? 'flutter_web_${DateTime.now().millisecondsSinceEpoch}' 
+        : clientIdentifier;
+    
     try {
-      await _client.connect().timeout(
-        const Duration(seconds: 5),
-        onTimeout: () {
-          debugPrint('[MQTT] Connection timed out');
-          throw TimeoutException('MQTT connection timed out');
-        },
-      );
-      debugPrint('[MQTT] Connection attempt returned: ${_client.connectionStatus?.state}');
-    } catch (e) {
-      debugPrint('[MQTT] Connection exception: $e');
-      _connectionStatus = 'Connection failed';
-      _isConnected = false;
-      _isConnecting = false;
+      // Create the client with the broker address
+      _client = MqttBrowserClient('ws://$broker/mqtt', clientId);
+      
+      // Set the WebSocket port explicitly
+      _client!.port = websocketPort;
+      
+      // Configure WebSocket protocols
+      _client!.websocketProtocols = MqttClientConstants.protocolsSingleDefault;
+      
+      // Logging & keep‑alive
+      _client!.logging(on: true);
+      _client!.keepAlivePeriod = 30;
+      
+      // Set connection timeout
+      _client!.connectTimeoutPeriod = 10000; // 10 seconds
+      
+      // Use MQTT 3.1 protocol (compatible with most brokers)
+      _client!.setProtocolV31();
+
+      // Connection callbacks
+      _client!.onConnected = _onConnected;
+      _client!.onDisconnected = _onDisconnected;
+      _client!.onSubscribed = _onSubscribed;
+      _client!.onUnsubscribed = _onUnsubscribed;
+      _client!.onAutoReconnect = _onAutoReconnect;
+      _client!.onAutoReconnected = _onAutoReconnected;
+
+      // Configure connection message
+      final connMessage = MqttConnectMessage()
+          .withClientIdentifier(clientId)
+          .startClean()
+          .withWillQos(MqttQos.atLeastOnce)
+          .keepAliveFor(30);
+      _client!.connectionMessage = connMessage;
+
+      // Update status
+      connectionStatus = 'Connecting to ws://$broker:$websocketPort/mqtt...';
       notifyListeners();
-      _scheduleRetry(broker, port, useWebSocket);
-      return false;
-    }
-
-    if (_client.connectionStatus?.state == MqttConnectionState.connected) {
-      _subscribeToTopics();
-      return true;
-    } else {
-      _connectionStatus = 'Connection failed: ${_client.connectionStatus?.state}';
-      _isConnected = false;
-      _isConnecting = false;
-      notifyListeners();
-      _scheduleRetry(broker, port, useWebSocket);
-      return false;
-    }
-  }
-
-  /// Create MQTT client dynamically
-  dynamic _createClient(String broker, int port, bool useWebSocket) {
-    if (kIsWeb || useWebSocket) {
-      final url = 'ws://$broker:$port/mqtt'; // /mqtt path often required
-      debugPrint('[MQTT] Creating MqttBrowserClient: $url');
-      return MqttBrowserClient(url, '');
-    } else {
-      debugPrint('[MQTT] Creating MqttServerClient: $broker:$port');
-      return MqttServerClient(broker, '');
-    }
-  }
-
-  /// Retry logic
-  void _scheduleRetry(String broker, int port, bool useWebSocket) {
-    if (_retryCount >= _maxRetries) {
-      debugPrint('[MQTT] Max retries reached');
-      _isConnecting = false;
-      _connectionStatus = 'Failed after $_maxRetries retries';
-      notifyListeners();
-      return;
-    }
-
-    _retryCount++;
-    _isConnecting = false;
-    _connectionStatus = 'Retrying connection ($_retryCount/$_maxRetries)...';
-    notifyListeners();
-
-    Future.delayed(_retryDelay, () {
-      debugPrint('[MQTT] Retrying connection ($_retryCount/$_maxRetries)...');
-      connect(broker: broker, port: port, useWebSocket: useWebSocket);
-    });
-  }
-
-  /// Subscribe to topics
-  void _subscribeToTopics() {
-    if (_client == null) return;
-
-    try {
-      _client.subscribe('mavlink/telemetry', MqttQos.atLeastOnce);
-      _client.subscribe('mavlink/alert', MqttQos.exactlyOnce);
-      _client.updates?.listen(_onMessage);
-      debugPrint('[MQTT] Subscribed to topics');
-    } catch (e) {
-      debugPrint('[MQTT] Subscription error: $e');
-    }
-  }
-
-  /// Handle incoming MQTT messages
-  void _onMessage(List<MqttReceivedMessage<MqttMessage>> messages) {
-    for (var message in messages) {
-      try {
-        final payload = message.payload as MqttPublishMessage;
-        final payloadString =
-            MqttPublishPayload.bytesToStringAsString(payload.payload.message);
-
-        final jsonData = jsonDecode(payloadString) as Map<String, dynamic>;
-
-        if (message.topic == 'mavlink/telemetry') {
-          _handleTelemetry(jsonData);
-        } else if (message.topic == 'mavlink/alert') {
-          _handleAlert(jsonData);
-        }
-      } catch (e) {
-        debugPrint('[MQTT] Error parsing message: $e');
+      
+      print('[MQTT] Attempting connection to ws://$broker:$websocketPort/mqtt');
+      
+      // Attempt connection
+      await _client!.connect();
+      
+      if (_client!.connectionStatus?.state == MqttConnectionState.connected) {
+        print('[MQTT] Connection successful!');
+      } else {
+        throw Exception('Connection failed: ${_client!.connectionStatus?.returnCode}');
       }
+    } catch (e) {
+      connectionStatus = 'Connection failed: ${e.toString().split(':').last.trim()}';
+      notifyListeners();
+      
+      if (_client != null) {
+        _client!.disconnect();
+        _client = null;
+      }
+      
+      print('[MQTT] Connect error: $e');
+      print('[MQTT] Connection status: ${_client?.connectionStatus}');
+    }
+  }
+
+  void _onConnected() {
+    isConnected = true;
+    connectionStatus = 'Connected';
+    messageCount = 0;
+    notifyListeners();
+    print('[MQTT] ✅ Connected successfully');
+    
+    // Subscribe to telemetry topic
+    _client!.subscribe('mavlink/telemetry', MqttQos.atMostOnce);
+    
+    // Subscribe to additional topics if needed
+    _client!.subscribe('mavlink/status', MqttQos.atMostOnce);
+    _client!.subscribe('mavlink/alerts', MqttQos.atMostOnce);
+    
+    // Listen for messages
+    _messageSubscription?.cancel();
+    _messageSubscription = _client!.updates?.listen(_onMessage);
+  }
+
+  void _onDisconnected() {
+    isConnected = false;
+    connectionStatus = 'Disconnected';
+    _messageSubscription?.cancel();
+    notifyListeners();
+    print('[MQTT] ⚠️ Disconnected');
+  }
+
+  void _onSubscribed(String topic) {
+    print('[MQTT] 📡 Subscribed to $topic');
+  }
+
+  void _onUnsubscribed(String? topic) {
+    print('[MQTT] 📴 Unsubscribed from $topic');
+  }
+
+  void _onAutoReconnect() {
+    connectionStatus = 'Reconnecting...';
+    notifyListeners();
+    print('[MQTT] 🔄 Auto-reconnecting...');
+  }
+
+  void _onAutoReconnected() {
+    isConnected = true;
+    connectionStatus = 'Reconnected';
+    notifyListeners();
+    print('[MQTT] ✅ Auto-reconnected');
+  }
+
+  void _onMessage(List<MqttReceivedMessage<MqttMessage?>>? messages) {
+    if (messages == null || messages.isEmpty) return;
+
+    final recMess = messages[0].payload as MqttPublishMessage;
+    final payload = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
+    final topic = messages[0].topic;
+    
+    messageCount++;
+    lastMessageTime = DateTime.now();
+    
+    print('[MQTT] 📨 Received on $topic: $payload');
+
+    try {
+      final jsonData = jsonDecode(payload) as Map<String, dynamic>;
+      
+      // Handle different topics
+      if (topic == 'mavlink/telemetry') {
+        _handleTelemetry(jsonData);
+      } else if (topic == 'mavlink/status') {
+        _handleStatus(jsonData);
+      } else if (topic == 'mavlink/alerts') {
+        _handleAlert(jsonData);
+      }
+      
+      notifyListeners();
+    } catch (e) {
+      print('[MQTT] ❌ Message parse failed: $e');
+      print('[MQTT] Payload was: $payload');
     }
   }
 
   void _handleTelemetry(Map<String, dynamic> jsonData) {
-    final telemetry = Telemetry.fromJson(jsonData);
-    _latestTelemetry = telemetry;
-
-    _telemetryHistory.add(telemetry);
-    if (_telemetryHistory.length > 100) _telemetryHistory.removeAt(0);
-
-    _telemetryController.add(telemetry);
-    notifyListeners();
-  }
-
-  void _handleAlert(Map<String, dynamic> jsonData) {
-    final alert = AlertMessage.fromJson(jsonData);
-    _latestAlert = alert;
-    _alertController.add(alert);
-    notifyListeners();
-  }
-
-  /// Connection callbacks
-  void _onConnected() {
-    _isConnected = true;
-    _isConnecting = false;
-    _connectionStatus = 'Connected';
-    _retryCount = 0;
-    notifyListeners();
-    debugPrint('[MQTT] Connected successfully');
-  }
-
-  void _onDisconnected(String broker, int port, bool useWebSocket) {
-    _isConnected = false;
-    _isConnecting = false;
-    _connectionStatus = 'Disconnected';
-    notifyListeners();
-    debugPrint('[MQTT] Disconnected');
-
-    // Automatically retry
-    _scheduleRetry(broker, port, useWebSocket);
-  }
-
-  void _onSubscribed(String topic) {
-    debugPrint('[MQTT] Subscribed to $topic');
-  }
-
-  /// Disconnect
-  void disconnect() {
     try {
-      _client?.disconnect();
+      final data = Telemetry.fromJson(jsonData);
+      latestTelemetry = data;
+      
+      // Check for automatic alerts
+      _checkAlertConditions(data);
     } catch (e) {
-      debugPrint('[MQTT] Disconnect error: $e');
-    } finally {
-      _isConnected = false;
-      _isConnecting = false;
-      _connectionStatus = 'Disconnected';
-      notifyListeners();
+      print('[MQTT] Failed to parse telemetry: $e');
     }
   }
 
-  /// Restart connection
-  Future<void> restart({
-    String broker = 'localhost',
-    int? port,
-    bool useWebSocket = false,
-  }) async {
-    disconnect();
-    await Future.delayed(const Duration(milliseconds: 500));
-    await connect(broker: broker, port: port, useWebSocket: useWebSocket);
+  void _handleStatus(Map<String, dynamic> jsonData) {
+    // Handle status messages if needed
+    print('[MQTT] Status update: $jsonData');
   }
 
-  /// Clear latest alert
+  void _handleAlert(Map<String, dynamic> jsonData) {
+    // Handle alert messages from broker
+    print('[MQTT] Alert received: $jsonData');
+  }
+
+  void _checkAlertConditions(Telemetry data) {
+    // Battery low alert
+    if (data.batteryVoltage < 10.5) {
+      final priority = data.batteryVoltage < 10.0 
+          ? AlertPriority.critical 
+          : AlertPriority.high;
+      
+      latestAlert = AlertMessage(
+        message: data.batteryVoltage < 10.0 
+            ? 'CRITICAL: Battery critically low!' 
+            : 'WARNING: Battery low',
+        type: AlertType.warning,
+        priority: priority,
+        timestamp: DateTime.now(),
+        currentVoltage: data.batteryVoltage,
+        threshold: 10.5,
+        actionRequired: data.batteryVoltage < 10.0 
+            ? 'Land immediately!' 
+            : 'Return to base soon',
+      );
+    }
+    
+    // Altitude alert (example)
+    if (data.altitude > 120) {
+      latestAlert = AlertMessage(
+        message: 'Altitude exceeds regulatory limit',
+        type: AlertType.warning,
+        priority: AlertPriority.medium,
+        timestamp: DateTime.now(),
+        currentVoltage: data.batteryVoltage,
+        threshold: 120.0,
+        actionRequired: 'Descend to safe altitude',
+      );
+    }
+  }
+
+  /// Publish a message to a topic
+  void publish(String topic, String message, {MqttQos qos = MqttQos.atLeastOnce}) {
+    if (!isConnected || _client == null) {
+      print('[MQTT] Cannot publish - not connected');
+      return;
+    }
+
+    try {
+      final builder = MqttClientPayloadBuilder();
+      builder.addString(message);
+      _client!.publishMessage(topic, qos, builder.payload!);
+      print('[MQTT] 📤 Published to $topic: $message');
+    } catch (e) {
+      print('[MQTT] ❌ Publish failed: $e');
+    }
+  }
+
+  /// Subscribe to additional topics
+  void subscribeToTopic(String topic, {MqttQos qos = MqttQos.atMostOnce}) {
+    if (!isConnected || _client == null) {
+      print('[MQTT] Cannot subscribe - not connected');
+      return;
+    }
+
+    _client!.subscribe(topic, qos);
+  }
+
+  /// Unsubscribe from a topic
+  void unsubscribeFromTopic(String topic) {
+    if (!isConnected || _client == null) {
+      print('[MQTT] Cannot unsubscribe - not connected');
+      return;
+    }
+
+    _client!.unsubscribe(topic);
+  }
+
+  void disconnect() {
+    try {
+      _messageSubscription?.cancel();
+      _client?.disconnect();
+    } catch (e) {
+      print('[MQTT] Error during disconnect: $e');
+    } finally {
+      _client = null;
+      isConnected = false;
+      connectionStatus = 'Disconnected';
+      messageCount = 0;
+      lastMessageTime = null;
+      notifyListeners();
+      print('[MQTT] 🔌 Disconnected');
+    }
+  }
+
   void clearAlert() {
-    _latestAlert = null;
+    latestAlert = null;
     notifyListeners();
   }
 
   @override
   void dispose() {
-    _telemetryController.close();
-    _alertController.close();
     disconnect();
     super.dispose();
   }
